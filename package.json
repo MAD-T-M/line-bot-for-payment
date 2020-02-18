@@ -16,5 +16,10 @@
   "bugs": {
     "url": "https://github.com/MAD-T-M/line-bot-for-payment/issues"
   },
-  "homepage": "https://github.com/MAD-T-M/line-bot-for-payment#readme"
+  "homepage": "https://github.com/MAD-T-M/line-bot-for-payment#readme",
+  "dependencies": {
+    "@line/bot-sdk": "^6.8.4",
+    "dotenv": "^8.2.0",
+    "express": "^4.17.1"
+  }
 }
