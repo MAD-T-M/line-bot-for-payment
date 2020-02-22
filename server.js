@@ -3,10 +3,11 @@
 require('dotenv').config();
 
 const express = require('express');
+const axios = require('axios');
 const line = require('@line/bot-sdk');
 const line_pay = require("line-pay");
-const cache = require("memory-cache");
 const uuid = require("uuid/v4");
+const moment = require("moment");
 const PORT = process.env.PORT || 5000;
 
 const config = {
@@ -21,6 +22,7 @@ const pay = new line_pay({
 })
 
 const app = express();
+const client = new line.Client(config);
 
 app.post('/webhook', line.middleware(config), (req, res) => {
     console.log(req.body.events);
@@ -34,49 +36,87 @@ app.post('/webhook', line.middleware(config), (req, res) => {
       });
 });
 
-app.get("/pay/confirm", (req, res) => {
+app.get("/pay/confirm", async(req, res) => {
     if (!req.query.transactionId){
         console.log("Transaction Id not found.");
         return res.status(400).send("Transaction Id not found.");
     }
 
+    const obj = {
+        app: process.env.KINTONE_PAY_APPID,
+        query: `transactionId in ("${req.query.transactionId}")`
+    }
     // Retrieve the reservation from database.
-    let reservation = cache.get(req.query.transactionId);
-    if (!reservation){
+    const response = await axios({
+        method: 'get',
+        url: process.env.KINTONE_DOMEINNAME + '/k/v1/records.json',
+        headers: {
+            'X-Cybozu-API-Token': process.env.KINTONE_PAY_APIKEY,
+            'Content-Type': 'application/json',
+        },
+        data: obj
+    })
+
+    if (response.data.records.length === 0){
         console.log("Reservation not found.");
         return res.status(400).send("Reservation not found.")
     }
 
+    const record = response.data.records[0];
+
     console.log(`Retrieved following reservation.`);
-    console.log(reservation);
+    console.log(record);
 
     let confirmation = {
         transactionId: req.query.transactionId,
-        amount: reservation.amount,
-        currency: reservation.currency
+        amount: parseInt(record.amount.value),
+        currency: "JPY"
     }
 
     console.log(`Going to confirm payment with following options.`);
     console.log(confirmation);
-
     // Capture payment.
     return pay.confirm(confirmation).then((response) => {
+
         res.sendStatus(200);
 
-        // Reply to user that payment has been completed.
-        let messages = [{
-            type: "sticker",
-            packageId: 2,
-            stickerId: 144
-        },{
-            type: "text",
-            text: "罰金の決済が完了しました。"
-        }]
-        return client.pushMessage(reservation.userId, messages);
+        axios({
+            method: 'put',
+            url: process.env.KINTONE_DOMEINNAME + '/k/v1/record.json',
+            headers: {
+                'X-Cybozu-API-Token': process.env.KINTONE_PARK_APIKEY,
+                'Content-Type': 'application/json',
+            },
+            data: {
+                app: parseInt(process.env.KINTONE_PARK_APPID),
+                id: record.lockId.value,
+                record: {
+                    userId: {value: record.userId.value},
+                    payed: {value: 1},
+                    pay_time: {value: moment().format("YYYY-MM-DDThh:mm:ss") + "Z"}
+                }
+            }
+        })
+        .then((result) => {
+            console.log(result.data);
+            let messages = [{
+                type: "sticker",
+                packageId: 2,
+                stickerId: 144
+            },{
+                type: "text",
+                text: "決済が完了しました。"
+            }]
+            return client.pushMessage(record.userId.value, messages);
+        })
+        .catch((err) => {
+            res.status(400).send("Updating data was failed.")
+            console.log(err);
+        })
+
     });
 })
 
-const client = new line.Client(config);
 function handleEvent(event) {
     if (event.type !== 'message' || event.message.type !== 'text') {
       return Promise.resolve(null);
@@ -92,28 +132,79 @@ function handleEvent(event) {
             confirmUrlType: "SERVER"
         }
     
-        pay.reserve(options).then((response) => {
+        pay.reserve(options).then(async(response) => {
             let reservation = options;
             reservation.transactionId = response.info.transactionId;
             reservation.userId = event.source.userId;
     
             console.log(`Reservation was made. Detail is following.`);
             console.log(reservation);
-    
-            cache.put(reservation.transactionId, reservation);
-    
-            let message = {
-                type: "template",
-                altText: `下記のボタンで決済に進んでください`,
-                template: {
-                    type: "buttons",
-                    text: `下記のボタンで決済に進んでください`,
-                    actions: [
-                        {type: "uri", label: "LINE Payで決済", uri: response.info.paymentUrl.web},
-                    ]
+
+            try {
+                const res = await axios({
+                    method: 'get',
+                    url: process.env.KINTONE_DOMEINNAME + '/k/v1/record.json',
+                    headers: {
+                        'X-Cybozu-API-Token': process.env.KINTONE_PARK_APIKEY,
+                        'Content-Type': 'application/json',
+                    },
+                    data: {
+                        app: process.env.KINTONE_PARK_APPID,
+                        id: event.message.text
+                    }
+                })
+                if(res.data.record) {
+                    console.log("hogehoge");
                 }
+
+                if(res.data.record) {
+                    console.log("hogehoge")
+                    axios({
+                        method: 'post',
+                        url: process.env.KINTONE_DOMEINNAME + '/k/v1/record.json',
+                        headers: {
+                           'X-Cybozu-API-Token': process.env.KINTONE_PAY_APIKEY,
+                           'Content-Type': 'application/json',
+                        },
+                        data: {
+                            app: parseInt(process.env.KINTONE_PAY_APPID),
+                            record: {
+                                userId: {value: reservation.userId},
+                                transactionId: {value: reservation.transactionId},
+                                lockId: {value: parseInt(event.message.text)},
+                                amount: {value: reservation.amount},
+                                orderId: {value: reservation.orderId},
+                                confirmUrl: {value: reservation.confirmUrl}
+                            }
+                        }
+                    })
+                    .then((res) => {
+                        console.log(res.data);
+                     })
+                     .catch((err) => {
+                        console.log(err);
+                        Promise.resolve(null)
+                     })
+                }
+                let message = {
+                    type: "template",
+                    altText: `下記のボタンで決済に進んでください`,
+                    template: {
+                        type: "buttons",
+                        text: `下記のボタンで決済に進んでください`,
+                        actions: [
+                            {type: "uri", label: "LINE Payで決済", uri: response.info.paymentUrl.web},
+                        ]
+                    }
+                }
+                return client.replyMessage(event.replyToken, message);
+            } catch(err) {
+                console.log(err);
+                return client.replyMessage(event.replyToken, {
+                    type: 'text',
+                    text: 'こちらのlockIdは無効です'
+                });
             }
-            return client.replyMessage(event.replyToken, message);
         })
     } else {
         return client.replyMessage(event.replyToken, {
