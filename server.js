@@ -92,7 +92,7 @@ app.get("/pay/confirm", async(req, res) => {
                 id: record.lockId.value,
                 record: {
                     userId: {value: record.userId.value},
-                    payed: {value: 1},
+                    state: {value: 1},
                     pay_time: {value: moment().format("YYYY-MM-DDThh:mm:ss") + "Z"}
                 }
             }
