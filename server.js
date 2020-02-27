@@ -9,6 +9,7 @@ const line_pay = require("line-pay");
 const uuid = require("uuid/v4");
 const moment = require("moment");
 const PORT = process.env.PORT || 5000;
+const admin = process.env.ADMIN;
 
 const config = {
     channelSecret: process.env.CHANNEL_SECRET,
@@ -35,6 +36,67 @@ app.post('/webhook', line.middleware(config), (req, res) => {
         res.status(500).end();
       });
 });
+
+app.get("/pay/refund", (req, res) => {
+    console.log(req.query);
+    if(req.query.userId !== process.env.ADMIN) {
+        return res.status(500).end();
+    } else {
+        axios({
+            method: 'get',
+            url: process.env.KINTONE_DOMEINNAME + '/k/v1/records.json',
+            headers: {
+                'X-Cybozu-API-Token': process.env.KINTONE_PAY_APIKEY,
+                'Content-Type': 'application/json',
+            },
+            data: {
+                app: process.env.KINTONE_PAY_APPID,
+                query: `lockId in ("${req.query.lockId}")`
+            }
+        })
+        .then((result) => {
+            const refundAmount = 1
+            const options = {
+                transactionId: result.data.records[0].transactionId.value,
+                refundAmount: refundAmount
+            }
+            return pay.refund(options).then((response) => {
+                console.log(response);
+                res.sendStatus(200);
+                axios({
+                    method: 'put',
+                    url: process.env.KINTONE_DOMEINNAME + '/k/v1/record.json',
+                    headers: {
+                        'X-Cybozu-API-Token': process.env.KINTONE_PARK_APIKEY,
+                        'Content-Type': 'application/json',
+                    },
+                    data: {
+                        app: parseInt(process.env.KINTONE_PARK_APPID),
+                        id: req.query.lockId,
+                        record: {
+                            state: {value: 2},
+                            return_time: {value: moment().format("YYYY-MM-DDThh:mm:ss") + "Z"}
+                        }
+                    }
+                })
+                .then((res) => {
+                    return client.pushMessage(result.data.records[0].userId.value, {
+                        type: 'text',
+                        text: `${refundAmount}円返却しました`
+                    });
+                })
+                .catch((err) => {
+                    console.log(err);
+                    return res.status(500).send("Update parking data was failed.")
+                })
+            })
+        })
+        .catch((err) => {
+            console.log(err);
+            return res.status(500).send("Fetch transaction data was failed.")
+        })
+    }
+})
 
 app.get("/pay/confirm", async(req, res) => {
     if (!req.query.transactionId){
@@ -110,7 +172,7 @@ app.get("/pay/confirm", async(req, res) => {
             return client.pushMessage(record.userId.value, messages);
         })
         .catch((err) => {
-            res.status(400).send("Updating data was failed.")
+            res.status(500).send("Updating data was failed.")
             console.log(err);
         })
 
@@ -122,6 +184,58 @@ function handleEvent(event) {
       return Promise.resolve(null);
     }
 
+    if(event.source.userId === admin) {
+        handleRefund(event);
+    } else {
+        handlePayment(event);
+    }
+
+}
+
+function handleRefund(event) {
+    if (isNumber(event.message.text) === true) {
+        axios({
+            method: 'get',
+            url: process.env.KINTONE_DOMEINNAME + '/k/v1/record.json',
+            headers: {
+                'X-Cybozu-API-Token': process.env.KINTONE_PARK_APIKEY,
+                'Content-Type': 'application/json',
+            },
+            data: {
+                app: process.env.KINTONE_PARK_APPID,
+                id: event.message.text
+            }
+        })
+        .then((res) => {
+            let message = {
+                type: "template",
+                altText: `lockId【${event.message.text}】の鍵が返却されましたか？`,
+                template: {
+                    type: "buttons",
+                    text: `lockId【${event.message.text}】の鍵が返却されましたか？`,
+                    actions: [
+                        {type: "uri", label: "はい", uri: process.env.OWN_DOMEIN + `/pay/refund?lockId=${event.message.text}&userId=${event.source.userId}`}
+                    ]
+                }
+            }
+            return client.replyMessage(event.replyToken, message);
+        })
+        .catch((err) => {
+            console.log(err);
+            return client.replyMessage(event.replyToken, {
+                type: 'text',
+                text: 'こちらのlockIdは無効です'
+            });
+        })
+    } else {
+        return client.replyMessage(event.replyToken, {
+            type: 'text',
+            text: 'LockIdを入力してください'
+        });
+    }
+}
+
+function handlePayment(event) {
     if (isNumber(event.message.text) === true) {
         let options = {
             productName: "罰金",
@@ -153,9 +267,6 @@ function handleEvent(event) {
                         id: event.message.text
                     }
                 })
-                if(res.data.record) {
-                    console.log("hogehoge");
-                }
 
                 if(res.data.record) {
                     console.log("hogehoge")
